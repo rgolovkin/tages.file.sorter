@@ -1,7 +1,5 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
-import { Transform } from 'stream';
-import { PriorityQueue } from 'typescript-collections';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -37,60 +35,26 @@ async function sortLargeFile(inputFilePath: string, outputFilePath: string, maxM
     tempFiles.push(tempFile);
   }
 
-  const fileStreams: fs.ReadStream[] = tempFiles.map(file => fs.createReadStream(file));
-
-  const mergeStream: MergeStream = new MergeStream(fileStreams);
   const outputStream: fs.WriteStream = fs.createWriteStream(outputFilePath);
+  for (const tempFile of tempFiles) {
+    const tempFileStream = fs.createReadStream(tempFile);
+    tempFileStream.pipe(outputStream, { end: false });
 
-  mergeStream.pipe(outputStream);
-
-  outputStream.on('finish', () => {
-    tempFiles.forEach(file => fs.unlinkSync(file));
-  });
-}
-
-class MergeStream extends Transform {
-  private heap: PriorityQueue<{ line: string, streamIndex: number }>;
-  private iterators: AsyncIterator<string>[];
-
-  constructor(streams: fs.ReadStream[]) {
-    super({ objectMode: true });
-    this.heap = new PriorityQueue<{ line: string, streamIndex: number }>((a, b) => a.line.localeCompare(b.line));
-    this.iterators = streams.map(stream => {
-      const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-      return rl[Symbol.asyncIterator]();
+    await new Promise<void>((resolve, reject) => {
+      tempFileStream.on('end', resolve);
+      tempFileStream.on('error', reject);
     });
 
-    this.initializeHeap();
+    fs.unlinkSync(tempFile);
   }
 
-  private async initializeHeap(): Promise<void> {
-    for (let i = 0; i < this.iterators.length; i++) {
-      const { value } = await this.iterators[i].next();
-      if (!value.done) {
-        this.heap.add({ line: value, streamIndex: i });
-      }
-    }
-  }
+  outputStream.end(() => {
+    console.log('All data written to output file.');
+  });
 
-  async _transform(chunk: unknown, encoding: BufferEncoding, callback: (error?: Error | null, data?: unknown) => void): Promise<void> {
-    while (!this.heap.isEmpty()) {
-      const { line, streamIndex } = this.heap.dequeue()!;
-      this.push(line);
-
-
-      const { value } = await this.iterators[streamIndex].next();
-      if (!value.done) {
-        this.heap.add({ line: value, streamIndex });
-      }
-    }
-
-    callback();
-  }
-
-  _flush(callback: (error?: Error | null) => void): void {
-    callback();
-  }
+  outputStream.on('error', (err) => {
+    console.error('Error while writing to output file:', err);
+  });
 }
 
 const inputFilePath: string = process.env.INPUT_FILE_PATH || 'input.txt';
